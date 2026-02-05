@@ -32,11 +32,12 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=100)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-k", type=int, default=50)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+
     args = parser.parse_args()
 
     # 1. Setup
-    device = args.device
+    if torch.cuda.is_available(): device = "cuda"
+    else: device = "cpu"
     path = Path(args.model_path)
     if not path.exists():
         checkpoints = Path("checkpoints") / args.model_path
@@ -82,13 +83,6 @@ def main():
     tps = n_tokens / dt
     print(f"\n\nstats: {dt:.2f}s, {tps:.2f} tok/s")
     
-    if device == "cuda":
-        num_params = sum(p.numel() for p in model.parameters())
-        model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
-        bw = (model_bytes * tps) / 1e9
-        flops = (2 * num_params * tps) / 1e12
-        print(f"bandwidth: {bw:.2f} GB/s")
-        print(f"flops: {flops:.2f} TF/s")
 
 if __name__ == "__main__":
     main()
