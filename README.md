@@ -23,7 +23,6 @@ bench.py                  # throughput benchmark
 pip install -r requirements.txt
 huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
-
 ## Run
 
 ```bash
@@ -32,10 +31,11 @@ python example.py
 
 ```
 Qwen3-0.6B | 752M params | torch.bfloat16 | cuda
-  28L / 16H / 128D | loaded in 10.2s
+  28L / 16H / 128D | loaded in 12.0s
 
-> Hello,
-  and thank you for your time.  I am a student who is interested in...
+> Hello, 
+ I'm trying to find the value of the integral from 0 to 1 of x^2 e^{-x} dx
+  [25 tokens, 1.18s, 21.2 tok/s]
 ```
 
 ## Benchmark
@@ -45,27 +45,22 @@ python bench.py
 ```
 ```
 Qwen3-0.6B | 752M params | torch.bfloat16 | cuda
-  28L / 16H / 128D | loaded in 12.2s
+  28L / 16H / 128D | loaded in 18.2s
 
-Warmup run...
+Warmup...
 
-Benchmarking 4 sequences...
-  Input:  8–64 tokens
-  Output: 16–64 tokens
+Benchmark
+Prompt length: 128 | Max tokens: 256
+Device: cuda | Dtype: torch.bfloat16
 
-  seq 1/4  in=  50 tok  out=  59 tok    2.13s    27.6 tok/s
-  seq 2/4  in=  15 tok  out=  50 tok    1.85s    27.1 tok/s
-  seq 3/4  in=   9 tok  out=  64 tok    2.34s    27.3 tok/s
-  seq 4/4  in=  55 tok  out=  33 tok    1.18s    27.9 tok/s
-
-Total: 206 tokens in 7.50s
-Throughput: 27.45 tok/s
-Device: cuda  Dtype: torch.bfloat16
+   Batch |   Time (s) |   Tokens |   Throughput
+--------------------------------------------------
+       1 |     15.696 |      256 |         16.3
+       4 |     16.701 |     1024 |         61.3
+       8 |     25.722 |     2048 |         79.6
+      16 |     56.960 |     4096 |         71.9
+      32 |    141.323 |     8192 |         58.0
+      64 |    313.775 |    16384 |         52.2
 ```
 
 > This benchmark was run on an **NVIDIA L4 (24GB)** via **Lightning AI**.
-
-
-
-
-> This is intentionally slow — full sequence recompute every token, no KV cache, no batching. That's the baseline we'll optimize from.
