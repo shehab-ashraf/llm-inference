@@ -7,6 +7,9 @@ from src.sampling_params import SamplingParams
 
 # -----------------------------------------------------------------------------
 # setup
+torch.manual_seed(42)
+torch.cuda.manual_seed_all(42)
+
 llm = LLM(
     model_path="./Qwen3-0.6B",
     device="cuda" if torch.cuda.is_available() else "cpu",
