@@ -29,20 +29,15 @@ class LLM:
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        # Config from file (single source: head_dim, torch_dtype, etc. live in config.json)
-        self.config = load_config(model_path)
-        # dtype: use config's torch_dtype when not specified, else respect device (bf16 if supported)
         if dtype is None:
-            cfg_dtype = self.config.get("torch_dtype", "bfloat16")
-            if isinstance(cfg_dtype, str):
-                dtype = torch.bfloat16 if cfg_dtype == "bfloat16" else torch.float16
-            else:
-                dtype = cfg_dtype
-            if device == "cuda" and not torch.cuda.is_bf16_supported() and dtype == torch.bfloat16:
+            cfg   = load_config(model_path).get("torch_dtype", "bfloat16")
+            dtype = torch.bfloat16 if cfg == "bfloat16" else torch.float16
+            if device == "cuda" and not torch.cuda.is_bf16_supported():
                 dtype = torch.float16
-        self.config["dtype"] = dtype
 
+        # Config 
+        self.config = load_config(model_path)
+        self.config["dtype"] = dtype
         self.model_path = model_path
         self.device = device
         self.dtype = dtype
@@ -76,58 +71,66 @@ class LLM:
     @torch.inference_mode()
     def generate(
         self,
-        prompts: Union[str, List[str]],
+        prompts: Union[str, List[str], torch.Tensor],
         sampling_params: Optional[SamplingParams] = None
     ) -> List[Dict[str, Any]]:
-        """prompts: Single prompt or list of prompts, sampling_params: Sampling configuration"""
-        if isinstance(prompts, str):
-            prompts = [prompts]
-
+        """Generate from single prompt, batch of prompts, or pre-tokenized input."""
         if sampling_params is None:
             sampling_params = SamplingParams()
 
-        outputs = []
-        for prompt in prompts:
-            output = self._generate_single(prompt, sampling_params)
-            outputs.append(output)
+        # Handle pre-tokenized input (token tensor)
+        if isinstance(prompts, torch.Tensor):
+            # prompts: (batch_size, prompt_len)
+            input_ids = prompts.to(self.device)
+            original_lengths = [prompts.shape[1]] * prompts.shape[0]
+        else:
+            # Handle string or list of strings
+            if isinstance(prompts, str):
+                prompts = [prompts]
 
-        return outputs
+            # Tokenize all prompts
+            # input_ids_list: list of tensors, each shape (1, prompt_len) - same length in batch
+            input_ids_list = [self.tokenizer.encode(p, return_tensors="pt") for p in prompts]
+            original_lengths = [ids.shape[1] for ids in input_ids_list]
 
-    def _generate_single(
-        self,
-        prompt: str,
-        params: SamplingParams
-    ) -> Dict[str, Any]:
-        """prompt: Single prompt, params: Sampling configuration"""
-        # Tokenize
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
-        original_length = input_ids.shape[1]
+            # Stack into batch (all prompts already same length)
+            # input_ids: (batch_size, prompt_len)
+            input_ids = torch.cat(input_ids_list, dim=0).to(self.device)
 
-        # Generate tokens one by one
-        for _ in range(params.max_tokens):
-            # Full forward pass every step
-            logits = self.model(input_ids)  # (batch_size, S, vocab_size)
+        batch_size = input_ids.shape[0]
 
-            # Last token logits (keep batch dim so sampler returns [batch_size])
-            last_logits = logits[:, -1, :]  # (batch_size, vocab_size)
+        # Generate exactly max_tokens for all sequences
+        for step in range(sampling_params.max_tokens):
+            # Forward pass
+            # logits: (batch_size, seq_len, vocab_size)
+            logits = self.model(input_ids)
 
-            # Sample next token -> (batch_size,) then unsqueeze(1) -> (batch_size, 1) for concatenation
-            next_token = self.sampler.sample(
+            # Get last token logits for each sequence in batch
+            # last_logits: (batch_size, vocab_size)
+            last_logits = logits[:, -1, :]
+
+            # Sample next tokens from batch
+            # next_tokens: (batch_size,)
+            next_tokens = self.sampler.sample(
                 last_logits,
-                temperature=params.temperature,
-                top_k=params.top_k,
-                top_p=params.top_p,
-                min_p=params.min_p
+                temperature=sampling_params.temperature,
+                top_k=sampling_params.top_k,
+                top_p=sampling_params.top_p,
+                min_p=sampling_params.min_p
             )
-            input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
 
-            # Stopping condition (batch_size=1: next_token is (1,) → .item() gives Python int)
-            if not params.ignore_eos:
-                if next_token.item() == self.tokenizer.eos_token_id:
-                    break
+            # Append to sequence
+            # next_tokens_2d: (batch_size, 1)
+            next_tokens_2d = next_tokens.unsqueeze(1)
+            # input_ids: (batch_size, seq_len + 1)
+            input_ids = torch.cat([input_ids, next_tokens_2d], dim=1)
 
         # Decode generated tokens
-        generated_ids = input_ids[0, original_length:].tolist()
-        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        outputs = []
+        for i, original_len in enumerate(original_lengths):
+            # generated_ids: [max_tokens]
+            generated_ids = input_ids[i, original_len:].tolist()
+            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            outputs.append({"text": generated_text})
 
-        return {"text": generated_text}
+        return outputs
