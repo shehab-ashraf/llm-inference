@@ -1,4 +1,4 @@
-"""Sampling parameters for text generation."""
+"""Sampling parameters."""
 
 from dataclasses import dataclass
 from typing import Optional
@@ -6,17 +6,6 @@ from typing import Optional
 
 @dataclass
 class SamplingParams:
-    """
-    Parameters for text generation.
-
-    Args:
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature (0 = greedy)
-        top_k: Keep only top k tokens
-        top_p: Nucleus sampling threshold
-        min_p: Min probability threshold
-        ignore_eos: Continue after EOS token
-    """
     max_tokens: int = 64
     temperature: float = 1.0
     top_k: Optional[int] = None
@@ -25,7 +14,6 @@ class SamplingParams:
     ignore_eos: bool = False
 
     def __post_init__(self):
-        """Validate parameters."""
         if self.max_tokens <= 0:
             raise ValueError(f"max_tokens must be > 0, got {self.max_tokens}")
         if self.temperature < 0:

@@ -1,20 +1,18 @@
 # llm-inference
 
-Minimal LLM inference engine, built from scratch step-by-step.  
-Currently **Naive implementation** [no optimizations, pure PyTorch].
+Minimal LLM inference engine, built from scratch.  
+Currently **naive baseline** — no KV cache, no optimizations.
 
-## What's here
+## Structure
 
-Qwen3-0.6B inference implementation in ~400 lines of Python:
-
-```
+```text
 src/
-├── models/qwen3.py       # full transformer (RoPE, GQA, RMSNorm, SwiGLU)
-├── utils/load_utils.py   # weight loading (safetensors / .bin)
+├── models/qwen3.py       # transformer (RoPE, GQA, RMSNorm, SwiGLU)
+├── utils/load_utils.py   # weight loading (safetensors)
 ├── sampling_params.py    # sampling config
-└── llm.py                # LLM wrapper (tokenizer + model + generate)
-example.py                # quick demo
-bench.py                  # throughput benchmark
+├── sampler.py            # token sampling
+└── llm.py                # engine (fast rust tokenizers + benchmark path)
+bench.py                  # pure tensor throughput benchmark
 ```
 
 ## Setup
@@ -23,44 +21,30 @@ bench.py                  # throughput benchmark
 pip install -r requirements.txt
 huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
-## Run
-
-```bash
-python example.py
-```
-
-```
-Qwen3-0.6B | 752M params | torch.bfloat16 | cuda
-  28L / 16H / 128D | loaded in 12.0s
-
-> Hello, 
- I'm trying to find the value of the integral from 0 to 1 of x^2 e^{-x} dx
-  [25 tokens, 1.18s, 21.2 tok/s]
-```
 
 ## Benchmark
 
 ```bash
 python bench.py
 ```
+
 ```
 Qwen3-0.6B | 752M params | torch.bfloat16 | cuda
-  28L / 16H / 128D | loaded in 18.2s
+  28L / 16H / 128D | loaded in 11.4s | 1.42 GB VRAM
 
 Warmup...
 
 Benchmark
 Prompt length: 128 | Max tokens: 256
-Device: cuda | Dtype: torch.bfloat16
 
-   Batch |   Time (s) |   Tokens |   Throughput
---------------------------------------------------
-       1 |     15.696 |      256 |         16.3
-       4 |     16.701 |     1024 |         61.3
-       8 |     25.722 |     2048 |         79.6
-      16 |     56.960 |     4096 |         71.9
-      32 |    141.323 |     8192 |         58.0
-      64 |    313.775 |    16384 |         52.2
+Batch | Time (s) | TTFT (s) | TPOT (s) | VRAM (GB) |    TPS
+-----------------------------------------------------------
+    1 |    9.381 |    0.065 |    0.037 |     1.647 |   27.3
+    4 |   12.019 |    0.045 |    0.047 |     2.299 |   85.2
+    8 |   23.778 |    0.043 |    0.093 |     3.168 |   86.1
+   16 |   56.430 |    0.092 |    0.221 |     4.906 |   72.6
+   32 |  141.460 |    0.237 |    0.554 |     8.381 |   57.9
+   64 |  316.827 |    0.569 |    1.240 |    15.333 |   51.7
 ```
 
-> This benchmark was run on an **NVIDIA L4 (24GB)** via **Lightning AI**.
+> Benchmarked on **NVIDIA L4 (24GB)** via **Lightning AI**.
