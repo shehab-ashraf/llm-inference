@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-inference"
+version = "0.1.0"
+description = "LLM inference engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "tokenizers>=0.13.0",
+    "safetensors>=0.3.0",
+    "flashinfer-python>=0.1.0",
+    "transformers>=4.40.0",
+    "datasets>=2.14.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

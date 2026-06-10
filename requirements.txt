@@ -1,4 +1,0 @@
-torch>=2.0.0
-tokenizers>=0.13.0
-safetensors>=0.3.0
-flashinfer-python>=0.1.0
