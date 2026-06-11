@@ -1,18 +1,19 @@
 """
-correctness test
-compares our custom model against huggingface using "mutual top-k agreement".
-if top-1 tokens differ, we ensure hf's top-1 is in our top-k, and our top-1 is in hf's top-k.
+correctness test — vllm-style mutual top-k agreement.
+both models generate independently (greedy), collecting logprobs.
+on token mismatch: assert ref top-1 in our top-k, and our top-1 in ref top-k.
 """
 
 import sys
 from pathlib import Path
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # -----------------------------------------------------------------------------
-# configuration
+# config
 model_path = "./Qwen3-0.6B"
-max_tokens = 64
+max_new_tokens = 64
 top_k = 3
 seed = 42
 
@@ -34,74 +35,76 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.models.qwen3 import Qwen3Model
 from src.utils.load_utils import load_weights, apply_weights, load_config
 
-# set up
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 device = "cuda" if torch.cuda.is_available() else "cpu"
+dtype = torch.bfloat16
 
-print(f"loading hf model from {model_path}...")
-tok = AutoTokenizer.from_pretrained(model_path)
-hf = AutoModelForCausalLM.from_pretrained(
-    model_path, dtype=torch.bfloat16, attn_implementation="sdpa"
+# load
+print(f"loading models from {model_path}...")
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+ref_model = AutoModelForCausalLM.from_pretrained(
+    model_path, dtype=dtype, attn_implementation="sdpa"
 ).to(device).eval()
 
-print("loading custom model...")
 model_config = load_config(model_path)
-model_config["dtype"] = torch.bfloat16
-model = Qwen3Model(model_config)
-state_dict = load_weights(model_path)
-apply_weights(model, state_dict, model_config)
-model = model.to(device).eval()
+model_config["dtype"] = dtype
+our_model = Qwen3Model(model_config)
+apply_weights(our_model, load_weights(model_path), model_config)
+our_model = our_model.to(device).eval()
 
-print(f"\nrunning correctness checks (top-{top_k} agreement)...\n")
+print(f"\ncorrectness — mutual top-{top_k} agreement\n")
 
-all_ok = True
+# -----------------------------------------------------------------------------
+# greedy generation — returns (tokens: list[int], logprobs: list[Tensor])
+
+def greedy_generate(forward_fn, input_ids, max_tokens):
+    tokens = []
+    logprobs = []
+    seq = input_ids
+    for _ in range(max_tokens):
+        logits = forward_fn(seq)
+        last_logits = logits[0, -1, :]
+        next_id = last_logits.argmax(dim=-1, keepdim=True).item()
+        tokens.append(next_id)
+        logprobs.append(F.log_softmax(last_logits.float(), dim=-1))
+        seq = torch.cat([seq, torch.tensor([[next_id]], device=device)], dim=1)
+    return tokens, logprobs
+
+# -----------------------------------------------------------------------------
+
+failed = False
+
 with torch.inference_mode():
     for prompt in prompts:
-        
-        # generate reference sequence using hf
-        inputs = tok(prompt, return_tensors="pt").to(device)
-        input_ids = inputs.input_ids
-        prompt_len = input_ids.shape[1]
-        
-        output = hf.generate(
-            input_ids,
-            attention_mask=inputs.attention_mask,
-            max_new_tokens=max_tokens,
-            do_sample=False, # greedy decode
-            pad_token_id=tok.eos_token_id,
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+
+        ref_tokens, ref_logprobs = greedy_generate(
+            lambda x: ref_model(x).logits, input_ids, max_new_tokens
         )
-        hf_seq = output[0] # full sequence [prompt + generated]
+        our_tokens, our_logprobs = greedy_generate(
+            our_model, input_ids, max_new_tokens
+        )
 
-        # forward pass sequence to get logits from both models
-        model_input = hf_seq[:-1].unsqueeze(0).to(dtype=torch.long)
-        logits = model(model_input) # (1, seq_len, vocab_size)
-        hf_logits = hf(model_input).logits
-
-        # check mutual top-k agreement
         ok = True
-        for i in range(prompt_len - 1, len(hf_seq) - 1):
-            step_logits = logits[0, i]
-            step_hf_logits = hf_logits[0, i]
-            
-            our_top_1 = step_logits.argmax().item()
-            hf_top_1 = step_hf_logits.argmax().item()
+        n_steps = min(len(ref_tokens), len(our_tokens))
 
-            if our_top_1 != hf_top_1:
-                our_top_k = step_logits.topk(top_k).indices.tolist()
-                hf_top_k = step_hf_logits.topk(top_k).indices.tolist()
-                
-                if hf_top_1 not in our_top_k or our_top_1 not in hf_top_k:
-                    ok = False
-                    break
+        for i in range(n_steps):
+            if ref_tokens[i] == our_tokens[i]:
+                continue
 
-        # print result
-        print(f"{'ok' if ok else 'fail'} | {repr(prompt[:60])}...")
+            ref_topk = torch.topk(ref_logprobs[i], top_k).indices.tolist()
+            our_topk = torch.topk(our_logprobs[i], top_k).indices.tolist()
+
+            if ref_tokens[i] not in our_topk or our_tokens[i] not in ref_topk:
+                ok = False
+            break
+
+        label = "ok" if ok else "FAIL"
+        print(f"{label:>4} | {prompt[:60]}...")
         if not ok:
-            print(f"  -> diff at step {i - prompt_len + 1}: hf={hf_top_1}, ours={our_top_1}")
-            all_ok = False
+            failed = True
 
-if not all_ok:
+if failed:
     sys.exit(1)
-
 print("\nall ok.")
