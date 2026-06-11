@@ -71,7 +71,7 @@ def apply_weights(model, state_dict, config):
 
     assign(model.final_norm.scale, state_dict["model.norm.weight"], "final_norm")
 
-    if "lm_head.weight" in state_dict:
-        assign(model.lm_head.weight, state_dict["lm_head.weight"], "lm_head")
-    else:
-        model.lm_head.weight = model.tok_emb.weight
+    if model.lm_head is not None:
+        if "lm_head.weight" in state_dict:
+            assign(model.lm_head.weight, state_dict["lm_head.weight"], "lm_head")
+    # if lm_head is None, word embeddings are tied, tok_emb.weight handles both
