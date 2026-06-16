@@ -1,7 +1,8 @@
 """
-correctness test — vllm-style mutual top-k agreement.
-both models generate independently (greedy), collecting logprobs.
-on token mismatch: assert ref top-1 in our top-k, and our top-1 in ref top-k.
+correctness test: mutual top-k agreement.
+both models generate independently (greedy), collecting top-k logprobs as
+{token_id: logprob} dicts. on token mismatch: assert ref's sampled token is in
+our top-k, and our sampled token is in ref's top-k.
 """
 
 import sys
@@ -14,7 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # config
 model_path = "./Qwen3-0.6B"
 max_new_tokens = 64
-top_k = 3
+top_k = 5
 seed = 42
 
 prompts = [
@@ -56,18 +57,20 @@ our_model = our_model.to(device).eval()
 print(f"\ncorrectness — mutual top-{top_k} agreement\n")
 
 # -----------------------------------------------------------------------------
-# greedy generation — returns (tokens: list[int], logprobs: list[Tensor])
+# greedy generation
 
-def greedy_generate(forward_fn, input_ids, max_tokens):
+def greedy_generate(forward_fn, input_ids, max_tokens, top_k):
     tokens = []
     logprobs = []
     seq = input_ids
     for _ in range(max_tokens):
         logits = forward_fn(seq)
         last_logits = logits[0, -1, :]
-        next_id = last_logits.argmax(dim=-1, keepdim=True).item()
+        logp = F.log_softmax(last_logits.float(), dim=-1)
+        topk_logp, topk_indices = torch.topk(logp, top_k)
+        next_id = topk_indices[0].item()
         tokens.append(next_id)
-        logprobs.append(F.log_softmax(last_logits.float(), dim=-1))
+        logprobs.append(dict(zip(topk_indices.tolist(), topk_logp.tolist())))
         seq = torch.cat([seq, torch.tensor([[next_id]], device=device)], dim=1)
     return tokens, logprobs
 
@@ -80,10 +83,10 @@ with torch.inference_mode():
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
         ref_tokens, ref_logprobs = greedy_generate(
-            lambda x: ref_model(x).logits, input_ids, max_new_tokens
+            lambda x: ref_model(x).logits, input_ids, max_new_tokens, top_k
         )
         our_tokens, our_logprobs = greedy_generate(
-            our_model, input_ids, max_new_tokens
+            our_model, input_ids, max_new_tokens, top_k
         )
 
         ok = True
@@ -93,10 +96,7 @@ with torch.inference_mode():
             if ref_tokens[i] == our_tokens[i]:
                 continue
 
-            ref_topk = torch.topk(ref_logprobs[i], top_k).indices.tolist()
-            our_topk = torch.topk(our_logprobs[i], top_k).indices.tolist()
-
-            if ref_tokens[i] not in our_topk or our_tokens[i] not in ref_topk:
+            if ref_tokens[i] not in our_logprobs[i] or our_tokens[i] not in ref_logprobs[i]:
                 ok = False
             break
 
