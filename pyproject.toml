@@ -12,9 +12,9 @@ dependencies = [
     "torch>=2.0.0",
     "tokenizers>=0.13.0",
     "safetensors>=0.3.0",
-    "flashinfer-python>=0.1.0",
     "transformers>=4.40.0",
     "datasets>=2.14.0",
+    "huggingface_hub<1.15",
 ]
 
 [tool.setuptools.packages.find]

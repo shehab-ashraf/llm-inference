@@ -66,15 +66,12 @@ class LLM:
         return self.model(input_ids)
 
     def _sample_token(self, logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
+        """logits: (B, V) -> (B,)"""
+        logits_last = logits[:, -1, :]  # (B, V)
         if params.temperature == 0.0:
-            return torch.argmax(logits, dim=-1)
-        return self.sampler.sample(
-            logits,
-            temperature=params.temperature,
-            top_k=params.top_k,
-            top_p=params.top_p,
-            min_p=params.min_p,
-        )
+            return logits_last.argmax(dim=-1)
+        temps = torch.full((logits_last.size(0),), params.temperature, device=logits.device, dtype=torch.float32)
+        return self.sampler(logits_last, temps)
 
     # -------------------------------------------------------------------------
     # Generation
@@ -96,7 +93,7 @@ class LLM:
         torch.cuda.synchronize()
         t_prefill_start = time.perf_counter()
         logits = self._prefill(input_ids)
-        next_token = self._sample_token(logits[:, -1, :], sampling_params)
+        next_token = self._sample_token(logits, sampling_params)
         torch.cuda.synchronize()
         ttft = time.perf_counter() - t_prefill_start
 
@@ -105,8 +102,8 @@ class LLM:
         t_decode_start = time.perf_counter()
         for step in range(1, sampling_params.max_tokens):
             input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
-            logits = self._decode_step(input_ids)  # full sequence every step, O(T^2)
-            next_token = self._sample_token(logits[:, -1, :], sampling_params)
+            logits = self._decode_step(input_ids)
+            next_token = self._sample_token(logits, sampling_params)
         torch.cuda.synchronize()
         tpot = (time.perf_counter() - t_decode_start) / max(1, sampling_params.max_tokens - 1)
 
