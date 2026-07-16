@@ -4,27 +4,26 @@ Minimal LLM inference engine, built from scratch.
 Currently **Naive implementation** [no optimizations, pure PyTorch].
 
 ## What's here
+
 Qwen3-0.6B inference implementation in ~500 lines:
 
 ```text
 src/
-├── models/qwen3.py       # transformer (RoPE, GQA, RMSNorm, SwiGLU)
-├── utils/load_utils.py   # weight loading (safetensors / .bin, shape validation)
-├── config.py             # engine configuration (dataclass)
-├── sampling_params.py    # sampling config (dataclass + validation)
-├── sampler.py            # FlashInfer-based token sampling
-└── llm.py                # engine (tokenizer + model + generation)
+├── models/qwen3.py       # model
+├── utils/load_utils.py   # weight loading
+├── config.py             # engine configuration
+├── sampling_params.py    # sampling config
+├── sampler.py            # Gumbel-max token sampling
+└── llm.py                # engine
 bench/
-├── perf.py               # throughput benchmark
-├── ppl.py                # perplexity vs HuggingFace (Wikitext-2)
-└── correctness.py        # mutual top-k agreement test vs HuggingFace
+├── perf.py               # Performance benchmark
+└── ppl.py                # perplexity vs HuggingFace
 ```
-
 
 ## Setup
 
 ```bash
-# Install uv 
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install dependencies
@@ -34,29 +33,44 @@ uv sync
 hf download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
 
-## Benchmark
+## Benchmarks
+
+All benchmarks on **NVIDIA L4 (24GB)** via **Lightning AI**.
+
+### Performance
 
 ```bash
 python -m bench.perf
 ```
 
 ```
-Qwen3-0.6B | 752M params | torch.bfloat16 | cuda
-  28L / 16H / 128D | loaded in 11.2s | 1.42 GB VRAM
+Qwen3-0.6B | 596M params | torch.bfloat16 | cuda
+  28L / 16H / 128D | loaded in 10.7s | 1.13 GB VRAM
 
 Warmup...
 
 Benchmark
 Prompt length: 128 | Max tokens: 256
 
-Batch | Time (s) | TTFT (s) | TPOT (s) | VRAM (GB) |    TPS
------------------------------------------------------------
-    1 |    9.017 |    0.042 |    0.035 |     1.645 |   28.4
-    4 |   12.058 |    0.044 |    0.047 |     2.297 |   84.9
-    8 |   23.866 |    0.043 |    0.093 |     3.166 |   85.8
-   16 |   57.042 |    0.090 |    0.223 |     4.904 |   71.8
-   32 |  142.074 |    0.237 |    0.556 |     8.379 |   57.7
-   64 |  316.794 |    0.569 |    1.240 |    15.331 |   51.7
+Batch | Time (s) | TTFT (s) | TPOT (s) | allocated_mem (GB) | reserved_mem (GB) |    TPS
+----------------------------------------------------------------------------------------
+    1 |    9.580 |    0.040 |    0.037 |              1.355 |             6.727 |   26.7
+    4 |   12.278 |    0.045 |    0.048 |              2.007 |            21.684 |   83.4
+    8 |   24.267 |    0.045 |    0.095 |              2.876 |            21.711 |   84.4
+   16 |   57.264 |    0.091 |    0.224 |              4.614 |            21.717 |   71.5
+   32 |  141.163 |    0.229 |    0.553 |              8.090 |            21.791 |   58.0
+   64 |  314.357 |    0.568 |    1.231 |             15.041 |            21.760 |   52.1
 ```
 
-> Benchmarked on **NVIDIA L4 (24GB)** via **Lightning AI**.
+### Perplexity
+
+```bash
+python -m bench.ppl
+```
+
+```
+>> hf ppl: 18.1799
+>> model ppl: 18.1612
+difference: 0.018715
+relative: 0.1029%
+```
