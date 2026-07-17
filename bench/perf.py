@@ -42,10 +42,10 @@ def main():
     print(f"\nBenchmark")
     print(f"Prompt length: {PROMPT_LEN} | Max tokens: {MAX_TOKENS}\n")
     print(
-        f"{'Batch':>5} | {'Time (s)':>8} | {'TTFT (s)':>8} | {'TPOT (s)':>8} |"
-        f" {'VRAM (GB)':>9} | {'TPS':>6}"
+        f"{'Batch':>5} | {'Time (s)':>8} | {'TTFT (s)':>8} | {'TPOT (s)':>8}"
+        f" | {'VRAM (GB)':>9} | {'TPS':>6}"
     )
-    print("-" * 68)
+    print("-" * 60)
 
     results = []
     for batch_size in BATCH_SIZES:
@@ -62,7 +62,6 @@ def main():
         ttft = outputs.ttft
         tpot = outputs.tpot
         allocated_mem = torch.cuda.max_memory_allocated() / (1024**3)
-        reserved_mem = torch.cuda.max_memory_reserved() / (1024**3)
         total_tokens = batch_size * MAX_TOKENS
         tps = total_tokens / dt
 
@@ -73,14 +72,13 @@ def main():
                 "ttft_s": ttft,
                 "tpot_s": tpot,
                 "allocated_mem": allocated_mem,
-                "reserved_mem": reserved_mem,
                 "tps": tps,
             }
         )
 
         print(
-            f"{batch_size:>5} | {dt:>8.3f} | {ttft:>8.3f} | {tpot:>8.3f} |"
-            f" {allocated_mem:>18.3f} | {reserved_mem:>17.3f} | {tps:>6.1f}"
+            f"{batch_size:>5} | {dt:>8.3f} | {ttft:>8.3f} | {tpot:>8.3f}"
+            f" | {allocated_mem:>9.3f} | {tps:>6.1f}"
         )
 
 
