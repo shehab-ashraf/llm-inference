@@ -43,9 +43,9 @@ def main():
     print(f"Prompt length: {PROMPT_LEN} | Max tokens: {MAX_TOKENS}\n")
     print(
         f"{'Batch':>5} | {'Time (s)':>8} | {'TTFT (s)':>8} | {'TPOT (s)':>8} |"
-        f" {'allocated_mem (GB)':>18} | {'reserved_mem (GB)':>17} | {'TPS':>6}"
+        f" {'VRAM (GB)':>9} | {'TPS':>6}"
     )
-    print("-" * 88)
+    print("-" * 68)
 
     results = []
     for batch_size in BATCH_SIZES:
