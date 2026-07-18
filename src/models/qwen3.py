@@ -199,4 +199,4 @@ class Qwen3Model(nn.Module):
             x = block(x, positions)
         x = self.final_norm(x)
         w = self.tok_emb.weight if self.lm_head is None else self.lm_head.weight
-        return F.linear(x.to(self.dtype), w)
+        return F.linear(x, w)
