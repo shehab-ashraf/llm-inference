@@ -29,6 +29,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install dependencies
 uv sync
 
+# Activate virtual environment
+source .venv/bin/activate
+
 # Download model
 hf download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
