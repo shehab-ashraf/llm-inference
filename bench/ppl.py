@@ -1,19 +1,20 @@
 """Perplexity benchmark."""
 
+import json
 import sys
 from pathlib import Path
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from src.models.qwen3 import Qwen3Model
-from src.utils.load_utils import load_weights, apply_weights, load_config
+from src.models.qwen3 import Qwen3ForCausalLM
+from src.utils.loader import load_model
 
 # -----------------------------------------------------------------------------
 # config
 
 model_path = "./Qwen3-0.6B"
-dataset_name = "wikitext"
+dataset_name = "Salesforce/wikitext"   # canonical 'wikitext' died with datasets 5.x
 dataset_config = "wikitext-2-raw-v1"
 split = "test"
 max_length = 2048
@@ -95,15 +96,21 @@ torch.cuda.empty_cache()
 # custom model
 
 print("\nloading custom model...")
-model_config = load_config(model_path)
-model_config["dtype"] = torch.bfloat16
-model = Qwen3Model(model_config)
-state_dict = load_weights(model_path)
-apply_weights(model, state_dict, model_config)
+with open(Path(model_path) / "config.json", encoding="utf-8") as f:
+    model_cfg = json.load(f)
+
+torch.set_default_dtype(torch.bfloat16)   # build params bf16 directly
+model = Qwen3ForCausalLM(model_cfg)
+load_model(model, model_path)
+torch.set_default_dtype(torch.float32)
 model = model.to(device).eval()
 
 print("computing model perplexity...")
-engine_ppl = compute_ppl(lambda ids: model(ids), encodings.input_ids)
+# no context set -> logit_indices None -> FULL (B, S, V) logits, which the
+# sliding-window scorer needs
+engine_ppl = compute_ppl(
+    lambda ids: model.compute_logits(model(ids)), encodings.input_ids
+)
 print(f">> model ppl: {engine_ppl:.4f}")
 
 # -----------------------------------------------------------------------------

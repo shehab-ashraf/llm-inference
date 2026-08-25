@@ -1,1 +1,1 @@
-"""Inference benchmarks: perf, perplexity, correctness."""
+"""Inference benchmarks: perf, perplexity."""

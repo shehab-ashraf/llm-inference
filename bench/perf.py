@@ -16,20 +16,19 @@ SEED = 42
 # -----------------------------------------------------------------------------
 # helpers
 
+
 def create_prompts(batch_size, prompt_len):
     return torch.randint(1000, 10000, (batch_size, prompt_len))
+
 
 # -----------------------------------------------------------------------------
 # main
 
+
 def main():
     torch.manual_seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = (
-        torch.bfloat16
-        if device == "cuda" and torch.cuda.is_bf16_supported()
-        else torch.float16
-    )
+    dtype = torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
 
     llm = LLM(model_path="./Qwen3-0.6B", device=device, dtype=dtype)
 
