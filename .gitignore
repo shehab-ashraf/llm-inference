@@ -1,4 +1,4 @@
-checkpoints/
+Qwen3-0.6B/
 __pycache__/
 *.py[cod]
 *$py.class
