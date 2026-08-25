@@ -82,7 +82,7 @@ class LLM:
         if isinstance(prompts, torch.Tensor):
             # prompts: (batch_size, prompt_len)
             input_ids = prompts.to(self.device)
-            original_lengths = [prompts.shape[1]] * prompts.shape[0]
+            original_lengths = [prompts.shape[1]] * prompts.shape[0]  #  assumes fixed-length batching
         else:
             # Handle string or list of strings
             if isinstance(prompts, str):
