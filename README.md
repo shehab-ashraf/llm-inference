@@ -4,30 +4,40 @@ Minimal LLM inference engine, built from scratch.
 Currently **Naive implementation** [no optimizations, pure PyTorch].
 
 ## What's here
-Qwen3-0.6B inference implementation in ~400 lines:
+Qwen3-0.6B inference implementation in ~500 lines:
 
 ```text
 src/
 ├── models/qwen3.py       # transformer (RoPE, GQA, RMSNorm, SwiGLU)
-├── utils/load_utils.py   # weight loading (safetensors / .bin)
-├── config.py             # engine configuration
-├── sampling_params.py    # sampling config
-├── sampler.py            # token sampling
+├── utils/load_utils.py   # weight loading (safetensors / .bin, shape validation)
+├── config.py             # engine configuration (dataclass)
+├── sampling_params.py    # sampling config (dataclass + validation)
+├── sampler.py            # FlashInfer-based token sampling
 └── llm.py                # engine (tokenizer + model + generation)
-bench.py                  # throughput benchmark
+bench/
+├── perf.py               # throughput benchmark
+├── ppl.py                # perplexity vs HuggingFace (Wikitext-2)
+└── correctness.py        # mutual top-k agreement test vs HuggingFace
 ```
+
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
+# Install uv 
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies
+uv sync
+
+# Download model
+hf download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
 
 ## Benchmark
 
 ```bash
-python bench.py
+python -m bench.perf
 ```
 
 ```
