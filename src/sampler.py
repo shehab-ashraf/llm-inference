@@ -12,7 +12,6 @@ from flashinfer.logits_processor import (
 )
 from typing import Optional
 
-from src.sampling_params import DEFAULT_MIN_P
 
 
 class Sampler:

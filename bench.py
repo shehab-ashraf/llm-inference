@@ -32,7 +32,7 @@ output_lengths = [randint(16, MAX_OUTPUT_LEN) for _ in range(NUM_SEQS)]
 
 # warmup
 print("\nWarmup run...")
-llm.generate("Hello", SamplingParams(max_tokens=5))
+llm.generate("Hello", SamplingParams(max_tokens=5, temperature=0.6, top_k=50, top_p=0.95, min_p=0.05))
 
 # -----------------------------------------------------------------------------
 # benchmark
