@@ -30,7 +30,7 @@ class RotaryEmbedding(nn.Module):
         cache = torch.cat((cos, sin), dim=-1).unsqueeze(1)  # (T, 1, D)
         self.register_buffer("cos_sin_cache", cache, persistent=False)
 
-    @torch.compile
+
     def forward(self, positions, query, key):
         """positions: (N,), query: (N, H, D), key: (N, G, D)"""
         cos_sin = self.cos_sin_cache[positions]
@@ -191,7 +191,7 @@ class Qwen3Model(nn.Module):
         """input_ids: (B, S) token IDs, positions: (N,)"""
         B, S = input_ids.shape
         if positions is None:
-            positions = torch.arange(S, device=input_ids.device)
+            positions = torch.arange(S, device=input_ids.device).repeat(B)
         x = self.tok_emb(input_ids)
         for block in self.blocks:
             x = block(x, positions)
