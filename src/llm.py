@@ -7,7 +7,7 @@ from typing import Any, Optional
 from tokenizers import Tokenizer
 
 from src.config import EngineConfig
-from src.models.qwen3 import Qwen3Model
+from src.models.qwen3 import Qwen3Model, ForwardContext
 from src.utils.load_utils import load_weights, apply_weights, load_config
 from src.sampling_params import SamplingParams
 from src.sampler import Sampler
@@ -55,21 +55,23 @@ class LLM:
               f"{head_dim}D | loaded in {load_time:.1f}s | {mem_gb:.2f} GB VRAM")
 
     # -------------------------------------------------------------------------
-    # Forward
+    # Inference Steps
 
     @torch.inference_mode()
     def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
         B, S = input_ids.shape
-        input_positions = (torch.arange(B, device=input_ids.device),
+        logit_indices = (torch.arange(B, device=input_ids.device),
                            torch.full((B,), S - 1, device=input_ids.device))
-        return self.model(input_ids, input_positions=input_positions)
+        ctx = ForwardContext(logit_indices=logit_indices)
+        return self.model(input_ids, ctx=ctx)
 
     @torch.inference_mode()
     def _decode_step(self, input_ids: torch.Tensor) -> torch.Tensor:
         B, S = input_ids.shape
-        input_positions = (torch.arange(B, device=input_ids.device),
+        logit_indices = (torch.arange(B, device=input_ids.device),
                            torch.full((B,), S - 1, device=input_ids.device))
-        return self.model(input_ids, input_positions=input_positions)
+        ctx = ForwardContext(logit_indices=logit_indices)
+        return self.model(input_ids, ctx=ctx)
 
     def _sample_token(self, logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         """logits: (B, V) -> (B,)"""

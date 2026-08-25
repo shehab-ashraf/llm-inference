@@ -3,6 +3,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dataclasses import dataclass
+from typing import Optional, Tuple, List
+
+@dataclass
+class ForwardContext:
+    logit_indices: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
 
 # -----------------------------------------------------------------------------
 # Rotary embeddings
@@ -189,8 +195,8 @@ class Qwen3Model(nn.Module):
         if not config.get("tie_word_embeddings", False):
             self.lm_head = nn.Linear(hidden_size, config["vocab_size"], bias=False, dtype=config["dtype"])
 
-    def forward(self, input_ids, positions=None, input_positions=None):
-        """input_ids: (B, S) token IDs, positions: (N,), input_positions: tuple(batch_idx, seq_idx)"""
+    def forward(self, input_ids, positions=None, ctx: Optional[ForwardContext] = None):
+        """input_ids: (B, S) token IDs, positions: (N,), ctx: ForwardContext containing inference state"""
         B, S = input_ids.shape
         if positions is None:
             positions = torch.arange(S, device=input_ids.device).repeat(B)
@@ -198,9 +204,8 @@ class Qwen3Model(nn.Module):
         for block in self.blocks:
             x = block(x, positions)
         x = self.final_norm(x)
-        
-        if input_positions is not None:
-            x = x[input_positions]
+        if ctx is not None and ctx.logit_indices is not None:
+            x = x[ctx.logit_indices]
             
         w = self.tok_emb.weight if self.lm_head is None else self.lm_head.weight
         return F.linear(x, w)
