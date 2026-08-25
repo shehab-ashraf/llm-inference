@@ -185,7 +185,9 @@ class Qwen3Model(nn.Module):
             [Qwen3DecoderLayer(config, self.rotary_emb) for _ in range(config["num_hidden_layers"])]
         )
         self.final_norm = RMSNorm(hidden_size)
-        self.lm_head = nn.Linear(hidden_size, config["vocab_size"], bias=False, dtype=config["dtype"])
+        self.lm_head = None
+        if not config.get("tie_word_embeddings", False):
+            self.lm_head = nn.Linear(hidden_size, config["vocab_size"], bias=False, dtype=config["dtype"])
 
     def forward(self, input_ids, positions=None):
         """input_ids: (B, S) token IDs, positions: (N,)"""
@@ -196,4 +198,5 @@ class Qwen3Model(nn.Module):
         for block in self.blocks:
             x = block(x, positions)
         x = self.final_norm(x)
-        return self.lm_head(x.to(self.dtype))
+        w = self.tok_emb.weight if self.lm_head is None else self.lm_head.weight
+        return F.linear(x.to(self.dtype), w)
