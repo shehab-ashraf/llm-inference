@@ -1,9 +1,8 @@
 """Sampling parameters."""
-
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)
 class SamplingParams:
     max_tokens: int = 64
     temperature: float = 1.0
