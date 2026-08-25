@@ -23,7 +23,6 @@ seed = 42
 # -----------------------------------------------------------------------------
 # setup
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 device = "cuda" if torch.cuda.is_available() else "cpu"
