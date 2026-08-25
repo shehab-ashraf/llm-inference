@@ -1,9 +1,12 @@
-"""LLM interface."""
+"""LLM inference engine."""
+
 import time
 import torch
-from transformers import AutoTokenizer
-from typing import List, Dict, Any, Optional, Union
+import os
+from typing import Any, Optional
+from tokenizers import Tokenizer
 
+from src.config import EngineConfig
 from src.models.qwen3 import Qwen3Model
 from src.utils.load_utils import load_weights, apply_weights, load_config
 from src.sampling_params import SamplingParams
@@ -11,126 +14,110 @@ from src.sampler import Sampler
 
 
 class LLM:
-    """Main LLM interface."""
 
-    def __init__(
-        self,
-        model_path: str,
-        device: Optional[str] = None,
-        dtype: Optional[torch.dtype] = None
-    ):
-        """
-        Initialize LLM.
+    def __init__(self, config: Optional[EngineConfig] = None, **kwargs):
+        if config is None:
+            config = EngineConfig(**kwargs)
+        self.config = config
 
-        Args:
-            model_path: Path to model directory
-            device: 'cuda' or 'cpu'
-            dtype: Model dtype
-        """
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        if dtype is None:
-            cfg   = load_config(model_path).get("torch_dtype", "bfloat16")
-            dtype = torch.bfloat16 if cfg == "bfloat16" else torch.float16
-            if device == "cuda" and not torch.cuda.is_bf16_supported():
-                dtype = torch.float16
+        torch.manual_seed(config.seed)
+        torch.cuda.manual_seed(config.seed)
 
-        # Config 
-        self.config = load_config(model_path)
-        self.config["dtype"] = dtype
-        self.model_path = model_path
-        self.device = device
-        self.dtype = dtype
+        device = config.device
+        dtype = config.dtype
+        if device == "cuda" and dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+            dtype = torch.float16
+            self.config.dtype = dtype
 
-        # Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer = Tokenizer.from_file(os.path.join(config.model_path, "tokenizer.json"))
 
-        # Model + weights
         t0 = time.perf_counter()
-        self.model = Qwen3Model(self.config)
-        state_dict = load_weights(model_path)
-        apply_weights(self.model, state_dict, self.config)
-        self.model = self.model.to(device=device)
-        self.model.eval()
+        model_config = load_config(config.model_path)
+        model_config["dtype"] = dtype
+        self.model_config = model_config
+
+        self.model = Qwen3Model(model_config)
+        state_dict = load_weights(config.model_path)
+        apply_weights(self.model, state_dict, model_config)
+        self.model = self.model.to(device=device).eval()
         load_time = time.perf_counter() - t0
 
-        # Sampler
         self.sampler = Sampler()
 
-        # Log (head_dim is in config.json for Qwen3; others fallback to hidden_size // num_heads)
+        # print model card
         n_params = sum(p.numel() for p in self.model.parameters())
-        head_dim = self.config.get("head_dim", self.config["hidden_size"] // self.config["num_attention_heads"])
+        head_dim = model_config.get("head_dim",
+            model_config["hidden_size"] // model_config["num_attention_heads"])
+        mem_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
         print(f"Qwen3-0.6B | {n_params/1e6:.0f}M params | {dtype} | {device}")
-        print(f"  {self.config['num_hidden_layers']}L / {self.config['num_attention_heads']}H / "
-              f"{head_dim}D | loaded in {load_time:.1f}s")
+        print(f"  {model_config['num_hidden_layers']}L / "
+              f"{model_config['num_attention_heads']}H / "
+              f"{head_dim}D | loaded in {load_time:.1f}s | {mem_gb:.2f} GB VRAM")
+
+    # -------------------------------------------------------------------------
+    # Forward
+
+    @torch.inference_mode()
+    def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model(input_ids)
+
+    @torch.inference_mode()
+    def _decode_step(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model(input_ids)
+
+    def _sample_token(self, logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
+        if params.temperature == 0.0:
+            return torch.argmax(logits, dim=-1)
+        return self.sampler.sample(
+            logits,
+            temperature=params.temperature,
+            top_k=params.top_k,
+            top_p=params.top_p,
+            min_p=params.min_p,
+        )
+
+    # -------------------------------------------------------------------------
+    # Generation
 
     @torch.inference_mode()
     def generate(
         self,
-        prompts: Union[str, List[str], torch.Tensor],
-        sampling_params: Optional[SamplingParams] = None
-    ) -> List[Dict[str, Any]]:
-        """Generate from single prompt, batch of prompts, or pre-tokenized input."""
+        prompts: torch.Tensor,
+        sampling_params: Optional[SamplingParams] = None,
+    ) -> Any:
+
         if sampling_params is None:
             sampling_params = SamplingParams()
 
-        # Handle pre-tokenized input (token tensor)
-        if isinstance(prompts, torch.Tensor):
-            # prompts: (batch_size, prompt_len)
-            input_ids = prompts.to(self.device)
-            original_lengths = [prompts.shape[1]] * prompts.shape[0]  #  assumes fixed-length batching
-        else:
-            # Handle string or list of strings
-            if isinstance(prompts, str):
-                prompts = [prompts]
+        device = self.config.device
+        input_ids = prompts.to(device)
 
-            # Tokenize all prompts
-            # input_ids_list: list of tensors, each shape (1, prompt_len) - same length in batch
-            input_ids_list = [self.tokenizer.encode(p, return_tensors="pt") for p in prompts]
-            original_lengths = [ids.shape[1] for ids in input_ids_list]
+        # Prefill
+        torch.cuda.synchronize()
+        t_prefill_start = time.perf_counter()
+        logits = self._prefill(input_ids)
+        next_token = self._sample_token(logits[:, -1, :], sampling_params)
+        torch.cuda.synchronize()
+        ttft = time.perf_counter() - t_prefill_start
 
-            # Stack into batch (all prompts already same length)
-            # input_ids: (batch_size, prompt_len)
-            input_ids = torch.cat(input_ids_list, dim=0).to(self.device)
+        # Decode
+        torch.cuda.synchronize()
+        t_decode_start = time.perf_counter()
+        for step in range(1, sampling_params.max_tokens):
+            input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
+            logits = self._decode_step(input_ids)  # full sequence every step, O(T^2)
+            next_token = self._sample_token(logits[:, -1, :], sampling_params)
+        torch.cuda.synchronize()
+        tpot = (time.perf_counter() - t_decode_start) / max(1, sampling_params.max_tokens - 1)
 
-        batch_size = input_ids.shape[0]
+        class GenerationResult:
+            def __init__(self, output, ttft, tpot):
+                self.output = output
+                self.ttft = ttft
+                self.tpot = tpot
 
-        # Generate exactly max_tokens for all sequences
-        for step in range(sampling_params.max_tokens):
-            # Forward pass
-            # logits: (batch_size, seq_len, vocab_size)
-            logits = self.model(input_ids)
+        return GenerationResult(input_ids, ttft, tpot)
 
-            # Get last token logits for each sequence in batch
-            # last_logits: (batch_size, vocab_size)
-            last_logits = logits[:, -1, :]
-
-            # Sample next tokens from batch
-            # next_tokens: (batch_size,)
-            next_tokens = self.sampler.sample(
-                last_logits,
-                temperature=sampling_params.temperature,
-                top_k=sampling_params.top_k,
-                top_p=sampling_params.top_p,
-                min_p=sampling_params.min_p
-            )
-
-            # Append to sequence
-            # next_tokens_2d: (batch_size, 1)
-            next_tokens_2d = next_tokens.unsqueeze(1)
-            # input_ids: (batch_size, seq_len + 1)
-            input_ids = torch.cat([input_ids, next_tokens_2d], dim=1)
-
-        # Decode generated tokens
-        outputs = []
-        for i, original_len in enumerate(original_lengths):
-            # generated_ids: [max_tokens]
-            generated_ids = input_ids[i, original_len:].tolist()
-            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            outputs.append({"text": generated_text})
-
-        return outputs
+    def __repr__(self):
+        n = sum(p.numel() for p in self.model.parameters())
+        return f"LLM(model={self.config.model_path!r}, params={n/1e6:.0f}M, dtype={self.config.dtype})"
