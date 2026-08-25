@@ -59,19 +59,24 @@ class LLM:
 
     @torch.inference_mode()
     def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model(input_ids)
+        B, S = input_ids.shape
+        input_positions = (torch.arange(B, device=input_ids.device),
+                           torch.full((B,), S - 1, device=input_ids.device))
+        return self.model(input_ids, input_positions=input_positions)
 
     @torch.inference_mode()
     def _decode_step(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model(input_ids)
+        B, S = input_ids.shape
+        input_positions = (torch.arange(B, device=input_ids.device),
+                           torch.full((B,), S - 1, device=input_ids.device))
+        return self.model(input_ids, input_positions=input_positions)
 
     def _sample_token(self, logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         """logits: (B, V) -> (B,)"""
-        logits_last = logits[:, -1, :]  # (B, V)
         if params.temperature == 0.0:
-            return logits_last.argmax(dim=-1)
-        temps = torch.full((logits_last.size(0),), params.temperature, device=logits.device, dtype=torch.float32)
-        return self.sampler(logits_last, temps)
+            return logits.argmax(dim=-1)
+        temps = torch.full((logits.size(0),), params.temperature, device=logits.device, dtype=torch.float32)
+        return self.sampler(logits, temps)
 
     # -------------------------------------------------------------------------
     # Generation
