@@ -1,211 +1,164 @@
 """Qwen3 model architecture."""
-
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from torch import nn
 
-@dataclass
-class ForwardContext:
-    logit_indices: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+from src.config import to_namespace
+from src.layers.activation import SiluAndMul
+from src.layers.attention import Attention
+from src.layers.layernorm import RMSNorm
+from src.layers.rotary_embedding import get_rope
+from src.utils.context import get_context
 
-# -----------------------------------------------------------------------------
-# Rotary embeddings
-
-def apply_rotary_emb(x, cos, sin):
-    """x: (..., D), cos/sin: (..., D/2)"""
-    x1, x2 = torch.chunk(x.float(), 2, dim=-1)
-    y1 = x1 * cos - x2 * sin
-    y2 = x2 * cos + x1 * sin
-    return torch.cat((y1, y2), dim=-1).to(x.dtype)
-
-
-class RotaryEmbedding(nn.Module):
-    """Precompute and cache rotary cos/sin values."""
-
-    def __init__(self, head_size, rotary_dim, max_position_embeddings, base):
-        super().__init__()
-        self.head_size = head_size
-        assert rotary_dim == head_size  # we rotate the full head
-        inv_freq = 1.0 / (base ** (torch.arange(0, rotary_dim, 2).float() / rotary_dim))
-        t = torch.arange(max_position_embeddings).float()
-        freqs = torch.einsum("i,j->ij", t, inv_freq)  # (T, D/2)
-        cos = freqs.cos()
-        sin = freqs.sin()
-        cache = torch.cat((cos, sin), dim=-1).unsqueeze(1)  # (T, 1, D)
-        self.register_buffer("cos_sin_cache", cache, persistent=False)
-
-
-    def forward(self, positions, query, key):
-        """positions: (N,), query: (N, H, D), key: (N, G, D)"""
-        cos_sin = self.cos_sin_cache[positions]
-        cos, sin = cos_sin.chunk(2, dim=-1)
-        query = apply_rotary_emb(query, cos, sin)
-        key   = apply_rotary_emb(key, cos, sin)
-        return query, key
-
-
-# -----------------------------------------------------------------------------
-# Normalization
-
-class RMSNorm(nn.Module):
-    """Root Mean Square LayerNorm (no mean subtraction)."""
-
-    def __init__(self, dim, eps=1e-6, bias=False):
-        super().__init__()
-        self.eps = eps
-        self.scale = nn.Parameter(torch.ones(dim))
-        self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
-
-    def forward(self, x):
-        dtype = x.dtype
-        x = x.float()
-        var = x.pow(2).mean(dim=-1, keepdim=True)
-        x = x * torch.rsqrt(var + self.eps)
-        x = x * self.scale
-        if self.bias is not None:
-            x = x + self.bias
-        return x.to(dtype)
-
-
-# -----------------------------------------------------------------------------
-# Feed-forward
-
-class Qwen3MLP(nn.Module):
-    """SwiGLU-style MLP."""
-
-    def __init__(self, d_in, d_hidden, dtype=torch.bfloat16):
-        super().__init__()
-        self.gate_proj = nn.Linear(d_in, d_hidden, bias=False, dtype=dtype)
-        self.up_proj   = nn.Linear(d_in, d_hidden, bias=False, dtype=dtype)
-        self.down_proj = nn.Linear(d_hidden, d_in, bias=False, dtype=dtype)
-
-    def forward(self, x):
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
-
-
-# -----------------------------------------------------------------------------
-# Attention
 
 class Qwen3Attention(nn.Module):
-    """GQA + QK RMSNorm + RoPE + SDPA."""
-
-    def __init__(self, d_in, num_heads, head_dim, num_kv_groups,
-                 qk_norm=True, dtype=torch.bfloat16, rotary_emb=None):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        num_kv_heads: int,
+        head_dim: int,
+        max_position: int,
+        rope_theta: float = 1_000_000.0,
+        rms_norm_eps: float = 1e-6,
+        attention_bias: bool = False,
+    ) -> None:
         super().__init__()
-        assert num_heads % num_kv_groups == 0
         self.num_heads = num_heads
-        self.num_kv_groups = num_kv_groups
+        self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
-        self.group_size = num_heads // num_kv_groups
-        self.rotary_emb = rotary_emb
+        self.scaling = head_dim**-0.5
 
-        self.W_query  = nn.Linear(d_in, num_heads * head_dim, bias=False, dtype=dtype)
-        self.W_key    = nn.Linear(d_in, num_kv_groups * head_dim, bias=False, dtype=dtype)
-        self.W_value  = nn.Linear(d_in, num_kv_groups * head_dim, bias=False, dtype=dtype)
-        self.out_proj = nn.Linear(num_heads * head_dim, d_in, bias=False, dtype=dtype)
+        self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=attention_bias)
+        self.k_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=attention_bias)
+        self.v_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=attention_bias)
+        self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
 
-        self.qk_norm = qk_norm
-        if qk_norm:
-            self.q_norm = RMSNorm(head_dim)
-            self.k_norm = RMSNorm(head_dim)
+        self.q_norm = RMSNorm(head_dim, eps=rms_norm_eps)
+        self.k_norm = RMSNorm(head_dim, eps=rms_norm_eps)
 
-    def forward(self, x, positions):
-        """x: (B, S, C), positions: (N,) where N = B*S"""
-        B, S, _ = x.shape
-
-        # project to (N, H, D)
-        q = self.W_query(x).view(B * S, self.num_heads, self.head_dim)
-        k = self.W_key(x).view(B * S, self.num_kv_groups, self.head_dim)
-        v = self.W_value(x).view(B * S, self.num_kv_groups, self.head_dim)
-
-        if self.qk_norm:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
-
-        # RoPE 
-        q, k = self.rotary_emb(positions, q, k)
-
-        # reshape for SDPA: (B, H, S, D)
-        q = q.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, S, self.num_kv_groups, self.head_dim).transpose(1, 2)
-        v = v.view(B, S, self.num_kv_groups, self.head_dim).transpose(1, 2)
-
-        # expand KV for GQA
-        k = k.repeat_interleave(self.group_size, dim=1)
-        v = v.repeat_interleave(self.group_size, dim=1)
-
-        # attention
-        ctx = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
-        ctx = ctx.transpose(1, 2).contiguous().view(B, S, -1)
-        return self.out_proj(ctx)
-
-
-# -----------------------------------------------------------------------------
-# Transformer block
-
-class Qwen3DecoderLayer(nn.Module):
-    def __init__(self, config, rotary_emb):
-        super().__init__()
-        hidden_size = config["hidden_size"]
-        self.norm1 = RMSNorm(hidden_size)
-        self.attn = Qwen3Attention(
-            d_in=hidden_size,
-            num_heads=config["num_attention_heads"],
-            head_dim=config.get("head_dim", config["hidden_size"] // config["num_attention_heads"]),
-            num_kv_groups=config["num_key_value_heads"],
-            qk_norm=config.get("qk_norm", True),
-            dtype=config["dtype"],
-            rotary_emb=rotary_emb,
-        )
-        self.norm2 = RMSNorm(hidden_size)
-        self.ff = Qwen3MLP(hidden_size, config["intermediate_size"], dtype=config["dtype"])
-
-    def forward(self, x, positions):
-        x = x + self.attn(self.norm1(x), positions)
-        x = x + self.ff(self.norm2(x))
-        return x
-
-
-# -----------------------------------------------------------------------------
-# Model
-
-class Qwen3Model(nn.Module):
-    """Qwen3 model"""
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.dtype = config["dtype"]
-        hidden_size = config["hidden_size"]
-        head_dim = config.get("head_dim", config["hidden_size"] // config["num_attention_heads"])
-        self.tok_emb = nn.Embedding(config["vocab_size"], hidden_size, dtype=config["dtype"])
-        self.rotary_emb = RotaryEmbedding(
+        self.rotary_emb = get_rope(
             head_size=head_dim,
             rotary_dim=head_dim,
-            max_position_embeddings=config["max_position_embeddings"],
-            base=config.get("rope_theta", 1_000_000.0),
+            max_position=max_position,
+            base=rope_theta,
         )
-        self.blocks = nn.ModuleList(
-            [Qwen3DecoderLayer(config, self.rotary_emb) for _ in range(config["num_hidden_layers"])]
+        self.attn = Attention(
+            num_heads=num_heads,
+            head_dim=head_dim,
+            scale=self.scaling,
+            num_kv_heads=num_kv_heads,
         )
-        self.final_norm = RMSNorm(hidden_size)
-        self.lm_head = None
-        if not config.get("tie_word_embeddings", False):
-            self.lm_head = nn.Linear(hidden_size, config["vocab_size"], bias=False, dtype=config["dtype"])
 
-    def forward(self, input_ids, positions=None, ctx: Optional[ForwardContext] = None):
-        """input_ids: (B, S) token IDs, positions: (N,), ctx: ForwardContext containing inference state"""
+    def forward(
+        self, positions: torch.Tensor, hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        # positions: (N,), hidden_states: (B, S, C)
+        B, S, _ = hidden_states.shape
+
+        # (B, S, C) -> (B * S, H, D)
+        q = self.q_proj(hidden_states).view(B * S, self.num_heads, self.head_dim)
+        k = self.k_proj(hidden_states).view(B * S, self.num_kv_heads, self.head_dim)
+        v = self.v_proj(hidden_states).view(B * S, self.num_kv_heads, self.head_dim)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        q, k = self.rotary_emb(positions, q, k)
+
+        # (B * S, H, D) -> (B, H, S, D)
+        q = q.view(B, S, -1, self.head_dim).transpose(1, 2)
+        k = k.view(B, S, -1, self.head_dim).transpose(1, 2)
+        v = v.view(B, S, -1, self.head_dim).transpose(1, 2)
+
+        # attention -> (B, S, H * D) -> o_proj -> (B, S, C)
+        out = self.attn(q, k, v)
+        return self.o_proj(out)
+
+
+class Qwen3MLP(nn.Module):
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
+        super().__init__()
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.act_fn = SiluAndMul()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, S, C) -> (B, S, C)
+        gate_up = torch.cat((self.gate_proj(x), self.up_proj(x)), dim=-1)
+        return self.down_proj(self.act_fn(gate_up))
+
+
+class Qwen3DecoderLayer(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        hidden_size = config.hidden_size
+        self.self_attn = Qwen3Attention(
+            hidden_size=hidden_size,
+            num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
+            head_dim=getattr(config, "head_dim", None)
+            or hidden_size // config.num_attention_heads,
+            max_position=config.max_position_embeddings,
+            rope_theta=getattr(config, "rope_theta", 1_000_000.0),
+            rms_norm_eps=config.rms_norm_eps,
+            attention_bias=getattr(config, "attention_bias", False),
+        )
+        self.mlp = Qwen3MLP(hidden_size, config.intermediate_size)
+        self.input_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self, positions: torch.Tensor, hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        # hidden_states: (B, S, C)
+        h = self.input_layernorm(hidden_states)
+        hidden_states = hidden_states + self.self_attn(positions, h)
+        h = self.post_attention_layernorm(hidden_states)
+        return hidden_states + self.mlp(h)
+
+
+class Qwen3Model(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.layers = nn.ModuleList(
+            Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)
+        )
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self, input_ids: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        # input_ids: (B, S) -> hidden_states: (B, S, C)
         B, S = input_ids.shape
         if positions is None:
             positions = torch.arange(S, device=input_ids.device).repeat(B)
-        x = self.tok_emb(input_ids)
-        for block in self.blocks:
-            x = block(x, positions)
-        x = self.final_norm(x)
-        if ctx is not None and ctx.logit_indices is not None:
-            x = x[ctx.logit_indices]
-            
-        w = self.tok_emb.weight if self.lm_head is None else self.lm_head.weight
-        return F.linear(x, w)
+        hidden = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            hidden = layer(positions, hidden)
+        return self.norm(hidden)
+
+
+class Qwen3ForCausalLM(nn.Module):
+    def __init__(self, config) -> None:
+        if isinstance(config, dict):
+            config = to_namespace(config)
+        super().__init__()
+        self.model = Qwen3Model(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if getattr(config, "tie_word_embeddings", False):
+            self.lm_head.weight = self.model.embed_tokens.weight
+
+    def forward(
+        self, input_ids: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        # input_ids: (B, S) -> hidden_states: (B, S, C)
+        return self.model(input_ids, positions)
+
+    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # hidden_states: (B, S, C) -> logits: (N_rows, V)
+        ctx = get_context()
+        if ctx.logit_indices is not None:
+            row_idx, col_idx = ctx.logit_indices
+            hidden_states = hidden_states[row_idx, col_idx]
+        return self.lm_head(hidden_states)
