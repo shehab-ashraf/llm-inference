@@ -1,28 +1,19 @@
-"""Token sampling via FlashInfer LogitsPipe."""
+"""Token sampler using the Gumbel-max trick."""
 
 import torch
-from flashinfer.logits_processor import (
-    LogitsPipe, Temperature, Softmax, TopK, TopP, MinP, Sample
-)
-from typing import Optional
+import torch.nn as nn
 
 
-class Sampler:
+class Sampler(nn.Module):
 
     def __init__(self):
-        self.pipe = LogitsPipe([
-            Temperature(), Softmax(), TopK(), TopP(), MinP(), Sample()
-        ])
+        super().__init__()
 
-    def sample(
-        self,
-        logits: torch.Tensor,
-        temperature: float = 1.0,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        min_p: Optional[float] = None,
-    ) -> torch.Tensor:
-        """logits: (B, V) -> next_token: (B, 1)"""
-        if temperature == 0.0:
-            return torch.argmax(logits, dim=-1)
-        return self.pipe(logits, temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p)
+    def forward(self, logits: torch.Tensor, temperatures: torch.Tensor) -> torch.Tensor:
+        """logits: (B, V), temperatures: (B,) -> tokens: (B,)"""
+        logits = logits.float().div_(temperatures.unsqueeze(dim=1))
+        probs = torch.softmax(logits, dim=-1)
+        sample_tokens = probs.div_(
+            torch.empty_like(probs).exponential_(1).clamp_min_(1e-10)
+        ).argmax(dim=-1)
+        return sample_tokens
