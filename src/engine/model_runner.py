@@ -1,6 +1,6 @@
-"""GPU execution unit: manages model and sampler forward passes."""
-import torch
+"""GPU execution unit: manages model and sampler."""
 
+import torch
 from src.config import Config
 from src.layers.sampler import Sampler
 from src.models.qwen3 import Qwen3ForCausalLM
@@ -21,9 +21,7 @@ class ModelRunner:
 
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(
-            _TORCH_DTYPES.get(
-                getattr(hf_config, "torch_dtype", "bfloat16"), torch.bfloat16
-            )
+            _TORCH_DTYPES.get(getattr(hf_config, "torch_dtype", "bfloat16"), torch.bfloat16)
         )
         try:
             self.model = Qwen3ForCausalLM(hf_config)
@@ -40,9 +38,18 @@ class ModelRunner:
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         logit_indices: tuple[torch.Tensor, torch.Tensor],
+        kv_cache=None,
+        cache_seqlens=None,
+        is_prefill: bool = True,
     ) -> torch.Tensor:
-        # input_ids: (B, S), positions: (N,) -> logits: (B, V)
-        set_context(is_prefill=True, logit_indices=logit_indices)
+        # input_ids: (B, S), positions: (B * S,) -> logits: (B, V)
+        # S = prompt_len (prefill) or 1 (decode); positions: relative (0..S-1) vs absolute (seq_lens)
+        set_context(
+            is_prefill=is_prefill,
+            logit_indices=logit_indices,
+            kv_cache=kv_cache,
+            cache_seqlens=cache_seqlens,
+        )
         try:
             hidden = self.model(input_ids, positions)
             return self.model.compute_logits(hidden)
