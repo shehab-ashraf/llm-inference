@@ -1,7 +1,7 @@
 """Qwen3 model architecture."""
+
 import torch
 from torch import nn
-
 from src.config import to_namespace
 from src.layers.activation import SiluAndMul
 from src.layers.attention import Attention
@@ -18,6 +18,7 @@ class Qwen3Attention(nn.Module):
         num_kv_heads: int,
         head_dim: int,
         max_position: int,
+        layer_idx: int = 0,
         rope_theta: float = 1_000_000.0,
         rms_norm_eps: float = 1e-6,
         attention_bias: bool = False,
@@ -47,12 +48,12 @@ class Qwen3Attention(nn.Module):
             head_dim=head_dim,
             scale=self.scaling,
             num_kv_heads=num_kv_heads,
+            layer_idx=layer_idx,
         )
 
-    def forward(
-        self, positions: torch.Tensor, hidden_states: torch.Tensor
-    ) -> torch.Tensor:
-        # positions: (N,), hidden_states: (B, S, C)
+    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        # positions: (B * S,) - S is prompt_len (prefill) or 1 (decode), aligns with flattened q rows
+        # hidden_states: (B, S, C)
         B, S, _ = hidden_states.shape
 
         # (B, S, C) -> (B * S, H, D)
@@ -64,10 +65,10 @@ class Qwen3Attention(nn.Module):
         k = self.k_norm(k)
         q, k = self.rotary_emb(positions, q, k)
 
-        # (B * S, H, D) -> (B, H, S, D)
-        q = q.view(B, S, -1, self.head_dim).transpose(1, 2)
-        k = k.view(B, S, -1, self.head_dim).transpose(1, 2)
-        v = v.view(B, S, -1, self.head_dim).transpose(1, 2)
+        # (B * S, H, D) -> (B, S, H, D)
+        q = q.view(B, S, self.num_heads, self.head_dim)
+        k = k.view(B, S, self.num_kv_heads, self.head_dim)
+        v = v.view(B, S, self.num_kv_heads, self.head_dim)
 
         # attention -> (B, S, H * D) -> o_proj -> (B, S, C)
         out = self.attn(q, k, v)
@@ -89,16 +90,16 @@ class Qwen3MLP(nn.Module):
 
 
 class Qwen3DecoderLayer(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self, config, layer_idx: int = 0) -> None:
         super().__init__()
         hidden_size = config.hidden_size
         self.self_attn = Qwen3Attention(
             hidden_size=hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
-            head_dim=getattr(config, "head_dim", None)
-            or hidden_size // config.num_attention_heads,
+            head_dim=getattr(config, "head_dim", None) or hidden_size // config.num_attention_heads,
             max_position=config.max_position_embeddings,
+            layer_idx=layer_idx,
             rope_theta=getattr(config, "rope_theta", 1_000_000.0),
             rms_norm_eps=config.rms_norm_eps,
             attention_bias=getattr(config, "attention_bias", False),
@@ -107,9 +108,7 @@ class Qwen3DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
 
-    def forward(
-        self, positions: torch.Tensor, hidden_states: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         # hidden_states: (B, S, C)
         h = self.input_layernorm(hidden_states)
         hidden_states = hidden_states + self.self_attn(positions, h)
@@ -122,7 +121,7 @@ class Qwen3Model(nn.Module):
         super().__init__()
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
-            Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)
+            Qwen3DecoderLayer(config, layer_idx=i) for i in range(config.num_hidden_layers)
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 

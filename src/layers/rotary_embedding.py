@@ -1,13 +1,11 @@
 """Rotary Position Embedding (RoPE)."""
-from functools import lru_cache
 
+from functools import lru_cache
 import torch
 from torch import nn
 
 
-def apply_rotary_emb(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-) -> torch.Tensor:
+def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     # x: (..., D), cos/sin: (..., D/2) -> (..., D)
     x1, x2 = torch.chunk(x.float(), 2, dim=-1)
     y1 = x1 * cos - x2 * sin
@@ -34,14 +32,13 @@ class RotaryEmbedding(nn.Module):
     def forward(
         self, positions: torch.Tensor, query: torch.Tensor, key: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # positions: (N,), query: (N, H, D), key: (N, KV, D)
-        cos_sin = self.cos_sin_cache[positions]  # (N, 1, D)
-        cos, sin = cos_sin.chunk(2, dim=-1)  # (N, 1, D/2) each
+        # positions: (B * S,), query: (B * S, H, D), key: (B * S, KV, D)
+        # one position per token row (works for prefill & decode)
+        cos_sin = self.cos_sin_cache[positions]  # (B * S, 1, D)
+        cos, sin = cos_sin.chunk(2, dim=-1)  # (B * S, 1, D/2) each
         return apply_rotary_emb(query, cos, sin), apply_rotary_emb(key, cos, sin)
 
 
 @lru_cache(maxsize=1)
-def get_rope(
-    head_size: int, rotary_dim: int, max_position: int, base: float
-) -> RotaryEmbedding:
+def get_rope(head_size: int, rotary_dim: int, max_position: int, base: float) -> RotaryEmbedding:
     return RotaryEmbedding(head_size, rotary_dim, max_position, base)
