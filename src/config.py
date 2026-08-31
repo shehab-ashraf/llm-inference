@@ -1,4 +1,5 @@
 """Engine configuration dataclass."""
+
 import json
 import os
 from dataclasses import dataclass
@@ -9,7 +10,6 @@ import torch
 
 
 def to_namespace(obj):
-    """Recursively wrap dicts for attribute-style access."""
     if isinstance(obj, dict):
         return SimpleNamespace(**{k: to_namespace(v) for k, v in obj.items()})
     return obj
@@ -32,6 +32,4 @@ class Config:
         with open(os.path.join(self.model, "config.json"), encoding="utf-8") as f:
             self.hf_config = to_namespace(json.load(f))
 
-        self.max_model_len = min(
-            self.max_model_len, self.hf_config.max_position_embeddings
-        )
+        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
