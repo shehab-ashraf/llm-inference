@@ -9,6 +9,8 @@ import torch
 class AttnMetadata:
     is_prefill: bool = True
     logit_indices: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+    kv_cache: object = None  # Optional[KVCache] - object avoids circular import
+    cache_seqlens: Optional[torch.Tensor] = None
 
 
 _CONTEXT = AttnMetadata()
