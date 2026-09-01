@@ -7,10 +7,7 @@ Minimal, high-performance LLM inference engine built from scratch in pure PyTorc
 <img src="image/engine.png" alt="Architecture" width="70%">
 
 
-
-## Quick Start
-
-### 1. Installation
+## Installation
 
 ```bash
 # Install uv package manager
