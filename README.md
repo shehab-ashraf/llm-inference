@@ -24,28 +24,6 @@ source .venv/bin/activate
 hf download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B/
 ```
 
-### 2. Basic Usage
-
-```python
-import torch
-from src.llm import LLM, SamplingParams
-
-# Initialize engine
-llm = LLM(model_path="./Qwen3-0.6B", device="cuda", dtype=torch.bfloat16)
-
-# Tokenized prompt IDs (B, S)
-prompt_ids = torch.tensor([[151644, 872, 198, 2610, 525, 264, 10950, 151645]], device="cuda")
-
-# Generate
-sampling_params = SamplingParams(max_tokens=64, temperature=0.7)
-result = llm.generate(prompt_ids, sampling_params)
-
-print(f"Generated tokens shape: {result.output.shape}")
-print(f"TTFT: {result.ttft * 1000:.2f} ms | TPOT: {result.tpot * 1000:.2f} ms")
-```
-
-
-
 ## Benchmarks
 
 Benchmarked on **NVIDIA L4 (24 GB)** (Prompt length 128, max tokens 256, greedy decoding).
